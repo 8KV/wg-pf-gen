@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>WireGuard Port-Forwarding Rule Generator</title>
+  <style>
+    body { font-family: monospace; margin: 20px; }
+    label { display: inline-block; width: 180px; vertical-align: top; }
+    textarea { width: 400px; height: 120px; }
+    pre { border: 1px solid #000; padding: 8px; white-space: pre; }
+    .row { margin-bottom: 8px; }
+  </style>
+</head>
+<body>
+  <h2>WireGuard iptables Port-Forwarding Rule Generator</h2>
+
+  <div class="row">
+    <label for="extIface">External interface:</label>
+    <input id="extIface" value="ens3">
+  </div>
+
+  <div class="row">
+    <label for="wgIface">WireGuard interface:</label>
+    <input id="wgIface" value="wg0">
+  </div>
+
+  <div class="row">
+    <label for="clientIp">Client IP:</label>
+    <input id="clientIp" value="10.66.66.2">
+  </div>
+
+  <div class="row">
+    <label for="ports">Ports (one per line; like 80/tcp, 80/udp, 80):</label>
+    <textarea id="ports">80
+443</textarea>
+  </div>
+
+  <div class="row">
+    <button id="compileBtn">Compile</button>
+    <button id="copyBtn">Copy</button>
+  </div>
+
+  <pre id="output"></pre>
+
+  <script>
+    const portsRe = /^\s*(\d+)(?:\s*-\s*(\d+))?(?:\s*\/\s*(tcp|udp))?\s*$/i;
+
+    function parsePorts(text) {
+      const lines = text.split(/\s+/).filter(Boolean);
+      const rules = [];
+      for (const raw of lines) {
+        const m = raw.match(portsRe);
+        if (!m) throw new Error("Invalid port spec: " + raw);
+        const start = parseInt(m[1], 10);
+        const end = m[2] ? parseInt(m[2], 10) : null;
+        const proto = (m[3] || "").toLowerCase();
+
+        let dport = "" + start;
+        let label = "" + start;
+        if (end) {
+          dport = `${start}:${end}`;
+          label = `${start}-${end}`;
+        }
+
+        const protos = proto ? [proto] : ["tcp", "udp"];
+        for (const p of protos) {
+          rules.push({ proto: p, dport, label: `${label}/${p}` });
+        }
+      }
+      return rules;
+    }
+
+    function genRules(ext, wg, ip, rules) {
+      const out = [];
+      for (const r of rules) {
+        out.push(`### Forward ${r.label} → ${ip}`);
+        out.push(`PostUp   = iptables -t nat -A PREROUTING -i ${ext} -p ${r.proto} --dport ${r.dport} -j DNAT --to-destination ${ip}`);
+        out.push(`PostDown = iptables -t nat -D PREROUTING -i ${ext} -p ${r.proto} --dport ${r.dport} -j DNAT --to-destination ${ip}`);
+        out.push(`PostUp   = iptables -A FORWARD -i ${ext} -o ${wg} -d ${ip} -p ${r.proto} --dport ${r.dport} -j ACCEPT`);
+        out.push(`PostDown = iptables -D FORWARD -i ${ext} -o ${wg} -d ${ip} -p ${r.proto} --dport ${r.dport} -j ACCEPT`);
+        out.push(`PostUp   = iptables -A FORWARD -i ${wg} -o ${ext} -s ${ip} -p ${r.proto} --sport ${r.dport} -m state --state ESTABLISHED,RELATED -j ACCEPT`);
+        out.push(`PostDown = iptables -D FORWARD -i ${wg} -o ${ext} -s ${ip} -p ${r.proto} --sport ${r.dport} -m state --state ESTABLISHED,RELATED -j ACCEPT`);
+        out.push("");
+      }
+      return out.join("\n");
+    }
+
+    document.getElementById("compileBtn").onclick = () => {
+      try {
+        const ext = document.getElementById("extIface").value.trim();
+        const wg  = document.getElementById("wgIface").value.trim();
+        const ip  = document.getElementById("clientIp").value.trim();
+        const ports = document.getElementById("ports").value;
+
+        const rules = parsePorts(ports);
+        document.getElementById("output").textContent = genRules(ext, wg, ip, rules);
+      } catch (e) {
+        document.getElementById("output").textContent = "Error: " + e.message;
+      }
+    };
+
+    document.getElementById("copyBtn").onclick = async () => {
+      const text = document.getElementById("output").textContent;
+      try {
+        await navigator.clipboard.writeText(text);
+        alert("Copied!");
+      } catch (e) {
+        alert("Copy failed, select manually.");
+      }
+    };
+  </script>
+</body>
+</html>
